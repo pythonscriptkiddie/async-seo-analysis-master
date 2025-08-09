@@ -1,13 +1,16 @@
 import asyncio
 import time
 import hashlib
-from collections import Counter
-from typing import Dict, List, Tuple
+from collections import Counter, defaultdict
+from typing import Dict, List
 from urllib.parse import urlsplit
 
 import aiohttp
 from bs4 import BeautifulSoup
 import trafilatura
+
+from .crawler import AsyncCrawler
+from .utils import rel_to_abs_url
 
 TOKEN_REGEX = r"(?u)\b\w\w+\b"
 
@@ -36,23 +39,6 @@ def _basic_keywords(tokens: List[str]) -> List[Dict]:
             result.append({"word": word, "count": cnt})
     result.sort(key=lambda x: x["count"], reverse=True)
     return result
-
-
-def _rel_to_abs_url(link: str, base_domain: str, url: str) -> str:
-    if ":" in link:
-        return link
-    rel = link
-    parsed = urlsplit(base_domain)
-    domain = parsed.netloc
-    if domain.endswith("/"):
-        domain = domain[:-1]
-    if len(rel) > 0 and rel[0] == "?":
-        if "?" in url:
-            return f"{url[:url.index('?')]}{rel}"
-        return f"{url}{rel}"
-    if len(rel) > 0 and rel[0] != "/":
-        rel = f"/{rel}"
-    return f"{parsed.scheme}://{domain}{rel}"
 
 
 async def _analyze_single_page(url: str, analyze_headings: bool, analyze_extra_tags: bool) -> Dict:
@@ -95,7 +81,7 @@ async def _analyze_single_page(url: str, analyze_headings: bool, analyze_extra_t
 
     links: List[str] = []
     for a in soup.find_all("a", href=True):
-        abs_link = _rel_to_abs_url(a["href"], base_domain=url, url=url)
+        abs_link = rel_to_abs_url(a["href"], base_domain=url, url=url)
         if abs_link not in links:
             links.append(abs_link)
 
@@ -161,13 +147,34 @@ def analyze(
 ) -> Dict:
     start = time.time()
 
-    page = asyncio.run(_analyze_single_page(url, analyze_headings, analyze_extra_tags))
+    pages: List[Dict]
+    if follow_links or sitemap_url:
+        crawler = AsyncCrawler(homepage=url, max_depth=3, max_concurrency=20)
+        pages = asyncio.run(crawler.crawl(sitemap_url=sitemap_url))
+    else:
+        pages = [asyncio.run(_analyze_single_page(url, analyze_headings, analyze_extra_tags))]
 
-    keywords = _basic_keywords(_tokenize((page.get("title") or "") + " " + (page.get("description") or "")))
+    # Aggregate like pyseoanalyzer
+    wordcount = Counter()
+    bigrams = Counter()
+    trigrams = Counter()
+    content_hashes = defaultdict(set)
+
+    for p in pages:
+        # simple tokenization from page text fallback
+        tokens = _tokenize(((p.get("title") or "") + " " + (p.get("description") or "")))
+        wordcount.update(tokens)
+        content_hash = p.get("content_hash")
+        if content_hash:
+            content_hashes[content_hash].add(p.get("url", ""))
+
+    duplicate_pages = [list(v) for v in content_hashes.values() if len(v) > 1]
+
+    keywords = _basic_keywords(list(wordcount.elements()))
 
     result: Dict = {
-        "pages": [page],
-        "duplicate_pages": [],
+        "pages": pages,
+        "duplicate_pages": duplicate_pages,
         "keywords": keywords,
         "errors": [],
         "total_time": _calc_total_time(start),
