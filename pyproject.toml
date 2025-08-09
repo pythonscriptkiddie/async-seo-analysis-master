@@ -39,6 +39,7 @@ classifiers = [
 dev = [
   "pytest>=8.2",
   "pytest-asyncio>=0.23",
+  "pytest-timeout>=2.3",
 ]
 
 [project.scripts]
