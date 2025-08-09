@@ -21,6 +21,7 @@ def main():
     parser.add_argument("--follow-links", action="store_true", default=False)
     parser.add_argument("--max-depth", type=int, default=3, help="Max crawl depth when following links.")
     parser.add_argument("--concurrency", type=int, default=20, help="Max concurrent fetches.")
+    parser.add_argument("--workers", type=int, default=0, help="Thread pool workers for CPU-bound analysis (0 = auto).")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
     args = parser.parse_args()
@@ -33,6 +34,7 @@ def main():
         follow_links=args.follow_links,
         max_depth=args.max_depth,
         concurrency=args.concurrency,
+        workers=args.workers,
     )
 
     if args.output_format == "html":

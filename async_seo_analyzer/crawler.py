@@ -8,6 +8,8 @@ from typing import Dict, List, Set
 from urllib.parse import urlsplit
 from xml.dom import minidom
 import urllib.robotparser as robotparser
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import aiohttp
 from aiohttp import TCPConnector
@@ -32,6 +34,7 @@ class AsyncCrawler:
         include_links: bool = True,
         include_images: bool = True,
         user_agent: str = "Mozilla/5.0",
+        cpu_workers: int | None = None,
     ) -> None:
         self.homepage = homepage
         self.max_depth = max_depth
@@ -48,6 +51,14 @@ class AsyncCrawler:
         self._robots: robotparser.RobotFileParser | None = None
         self._crawl_delay: float = 0.0
 
+        # CPU parse pool size (None -> auto)
+        self.cpu_workers = cpu_workers
+        self.metrics: Dict[str, float | int] = {
+            "fetch_ms_total": 0.0,
+            "parse_ms_total": 0.0,
+            "pages": 0,
+        }
+
     @property
     def base_netloc(self) -> str:
         return urlsplit(self.homepage).netloc
@@ -56,16 +67,19 @@ class AsyncCrawler:
     def base_scheme(self) -> str:
         return urlsplit(self.homepage).scheme or "https"
 
-    async def _fetch(self, session: aiohttp.ClientSession, url: str) -> tuple[str, str]:
+    async def _fetch(self, session: aiohttp.ClientSession, url: str) -> tuple[str, str, float]:
         async def do_get():
             return await session.get(url)
 
+        start = time.perf_counter()
         try:
             response = await retry(lambda: do_get(), max_retries=3, timeout=10.0, retry_interval=1.5)
             text = await response.text()
-            return str(response.url), text
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
+            return str(response.url), text, elapsed_ms
         except Exception:
-            return url, ""
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
+            return url, "", elapsed_ms
 
     def _parse(self, url: str, html: str) -> Dict:
         soup = BeautifulSoup(html, "lxml")
@@ -137,6 +151,8 @@ class AsyncCrawler:
 
         ssl_ctx = ssl.create_default_context(cafile=certifi.where())
         connector = TCPConnector(ssl=ssl_ctx)
+        max_workers = self.cpu_workers if (self.cpu_workers and self.cpu_workers > 0) else None
+
         async with aiohttp.ClientSession(headers=self.headers, connector=connector) as session:
             await self._load_robots(session)
 
@@ -157,43 +173,50 @@ class AsyncCrawler:
                     pass
 
             sem = asyncio.Semaphore(self.max_concurrency)
+            loop = asyncio.get_running_loop()
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                async def worker() -> None:
+                    while True:
+                        item = await queue.get()
+                        if item.url in self.crawled_urls:
+                            queue.task_done()
+                            continue
 
-            async def worker() -> None:
-                while True:
-                    item = await queue.get()
-                    if item.url in self.crawled_urls:
+                        if not self._allowed_by_robots(item.url):
+                            queue.task_done()
+                            continue
+
+                        self.crawled_urls.add(item.url)
+                        async with sem:
+                            if self._crawl_delay:
+                                await asyncio.sleep(self._crawl_delay)
+                            url, html, fetch_ms = await self._fetch(session, item.url)
+                            self.metrics["fetch_ms_total"] += fetch_ms
+
+                        if not html:
+                            queue.task_done()
+                            continue
+
+                        start_parse = time.perf_counter()
+                        page_result = await loop.run_in_executor(pool, self._parse, url, html)
+                        parse_ms = (time.perf_counter() - start_parse) * 1000.0
+                        self.metrics["parse_ms_total"] += parse_ms
+                        self.metrics["pages"] += 1
+
+                        self.pages.append(page_result)
+
+                        if item.depth < self.max_depth and self.include_links:
+                            for link in page_result.get("links", []):
+                                href = link.get("href", "")
+                                if href and urlsplit(href).netloc == self.base_netloc and href not in self.crawled_urls:
+                                    if self._allowed_by_robots(href):
+                                        await queue.put(WorkItem(depth=item.depth + 1, url=href))
+
                         queue.task_done()
-                        continue
 
-                    if not self._allowed_by_robots(item.url):
-                        queue.task_done()
-                        continue
-
-                    self.crawled_urls.add(item.url)
-                    async with sem:
-                        if self._crawl_delay:
-                            await asyncio.sleep(self._crawl_delay)
-                        url, html = await self._fetch(session, item.url)
-
-                    if not html:
-                        queue.task_done()
-                        continue
-
-                    page_result = self._parse(url, html)
-                    self.pages.append(page_result)
-
-                    if item.depth < self.max_depth and self.include_links:
-                        for link in page_result.get("links", []):
-                            href = link.get("href", "")
-                            if href and urlsplit(href).netloc == self.base_netloc and href not in self.crawled_urls:
-                                if self._allowed_by_robots(href):
-                                    await queue.put(WorkItem(depth=item.depth + 1, url=href))
-
-                    queue.task_done()
-
-            workers = [asyncio.create_task(worker()) for _ in range(self.max_concurrency)]
-            await queue.join()
-            for w in workers:
-                w.cancel()
+                workers = [asyncio.create_task(worker()) for _ in range(self.max_concurrency)]
+                await queue.join()
+                for w in workers:
+                    w.cancel()
 
         return self.pages

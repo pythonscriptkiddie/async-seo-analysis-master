@@ -1,6 +1,5 @@
 import asyncio
 import time
-import hashlib
 from collections import Counter, defaultdict
 from typing import Dict, List
 
@@ -8,6 +7,8 @@ import ssl
 import certifi
 import aiohttp
 from aiohttp import TCPConnector
+from concurrent.futures import ThreadPoolExecutor
+import os
 
 from .crawler import AsyncCrawler
 from .page_analysis import analyze_html
@@ -23,20 +24,24 @@ async def _fetch_text(session: aiohttp.ClientSession, url: str, timeout: float =
         return text, {k.lower(): v for k, v in resp.headers.items()}
 
 
-async def _analyze_single_page(url: str, analyze_headings: bool, analyze_extra_tags: bool) -> Dict:
+async def _analyze_single_page(url: str, analyze_headings: bool, analyze_extra_tags: bool, pool: ThreadPoolExecutor) -> Dict:
     ssl_ctx = ssl.create_default_context(cafile=certifi.where())
     connector = TCPConnector(ssl=ssl_ctx)
     async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}, connector=connector) as session:
         raw_html, _ = await _fetch_text(session, url)
 
-    page = analyze_html(url, raw_html, analyze_headings, analyze_extra_tags)
+    loop = asyncio.get_running_loop()
+    page = await loop.run_in_executor(
+        pool, analyze_html, url, raw_html, analyze_headings, analyze_extra_tags
+    )
     return page.as_dict()
 
 
-async def _analyze_crawled_pages(crawled: List[Dict], analyze_headings: bool, analyze_extra_tags: bool) -> List[Dict]:
+async def _analyze_crawled_pages(crawled: List[Dict], analyze_headings: bool, analyze_extra_tags: bool, pool: ThreadPoolExecutor) -> List[Dict]:
+    loop = asyncio.get_running_loop()
     tasks = [
-        asyncio.to_thread(
-            analyze_html, p["url"], p.get("text", ""), analyze_headings, analyze_extra_tags
+        loop.run_in_executor(
+            pool, analyze_html, p["url"], p.get("text", ""), analyze_headings, analyze_extra_tags
         )
         for p in crawled
     ]
@@ -52,46 +57,66 @@ def analyze(
     follow_links: bool = False,
     max_depth: int = 3,
     concurrency: int = 20,
+    workers: int = 0,
 ) -> Dict:
     start = time.time()
 
-    pages: List[Dict]
-    if follow_links or sitemap_url:
-        crawler = AsyncCrawler(homepage=url, max_depth=max_depth, max_concurrency=concurrency)
-        crawled = asyncio.run(crawler.crawl(sitemap_url=sitemap_url))
-        pages = asyncio.run(_analyze_crawled_pages(crawled, analyze_headings, analyze_extra_tags))
-    else:
-        pages = [asyncio.run(_analyze_single_page(url, analyze_headings, analyze_extra_tags))]
+    max_workers = workers if workers and workers > 0 else (os.cpu_count() or 4)
+    crawl_metrics = None
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        if follow_links or sitemap_url:
+            crawler = AsyncCrawler(
+                homepage=url,
+                max_depth=max_depth,
+                max_concurrency=concurrency,
+                cpu_workers=max_workers,
+            )
+            crawled = asyncio.run(crawler.crawl(sitemap_url=sitemap_url))
+            crawl_metrics = crawler.metrics
+            pages = asyncio.run(_analyze_crawled_pages(crawled, analyze_headings, analyze_extra_tags, pool))
+        else:
+            pages = [asyncio.run(_analyze_single_page(url, analyze_headings, analyze_extra_tags, pool))]
 
-    # Aggregate like pyseoanalyzer
-    content_hashes = defaultdict(set)
-    unigram_counts = Counter()
-    bigram_counts = Counter()
-    trigram_counts = Counter()
+        content_hashes = defaultdict(set)
+        unigram_counts = Counter()
+        bigram_counts = Counter()
+        trigram_counts = Counter()
 
-    for p in pages:
-        content_hash = p.get("content_hash")
-        if content_hash:
-            content_hashes[content_hash].add(p.get("url", ""))
-        # per-page wordcount/bigrams/trigrams
-        unigram_counts.update(p.get("wordcount", {}))
-        bigram_counts.update(p.get("bigrams", {}))
-        trigram_counts.update(p.get("trigrams", {}))
+        # Parallelize per-page n-gram accumulation in the pool
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
 
-    duplicate_pages = [list(v) for v in content_hashes.values() if len(v) > 1]
+        def accumulate(page: Dict) -> tuple[Counter, Counter, Counter, str, str]:
+            return (
+                Counter(page.get("wordcount", {})),
+                Counter(page.get("bigrams", {})),
+                Counter(page.get("trigrams", {})),
+                page.get("content_hash", ""),
+                page.get("url", ""),
+            )
 
-    # Build site-level keywords list: words and n-grams with count > 4
-    keywords: List[Dict] = []
-    for w, c in unigram_counts.items():
-        if c > 4:
-            keywords.append({"word": w, "count": c})
-    for w, c in bigram_counts.items():
-        if c > 4:
-            keywords.append({"word": tuple(w.split(" ")), "count": c})
-    for w, c in trigram_counts.items():
-        if c > 4:
-            keywords.append({"word": tuple(w.split(" ")), "count": c})
-    keywords.sort(key=lambda x: x["count"], reverse=True)
+        futures = [pool.submit(accumulate, p) for p in pages]
+        for fut in futures:
+            u, b, t, ch, uurl = fut.result()
+            unigram_counts.update(u)
+            bigram_counts.update(b)
+            trigram_counts.update(t)
+            if ch:
+                content_hashes[ch].add(uurl)
+
+        duplicate_pages = [list(v) for v in content_hashes.values() if len(v) > 1]
+
+        keywords: List[Dict] = []
+        for w, c in unigram_counts.items():
+            if c > 4:
+                keywords.append({"word": w, "count": c})
+        for w, c in bigram_counts.items():
+            if c > 4:
+                keywords.append({"word": tuple(w.split(" ")), "count": c})
+        for w, c in trigram_counts.items():
+            if c > 4:
+                keywords.append({"word": tuple(w.split(" ")), "count": c})
+        keywords.sort(key=lambda x: x["count"], reverse=True)
 
     result: Dict = {
         "pages": pages,
@@ -100,4 +125,6 @@ def analyze(
         "errors": [],
         "total_time": _calc_total_time(start),
     }
+    if crawl_metrics is not None:
+        result["crawl_metrics"] = crawl_metrics
     return result
