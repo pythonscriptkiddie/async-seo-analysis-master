@@ -37,5 +37,11 @@ classifiers = [
 [project.scripts]
 async-seo-analyzer = "async_seo_analyzer.__main__:main"
 
+[tool.hatch.build]
+include = [
+  "async_seo_analyzer/**",
+  "README.md",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["async_seo_analyzer"]
