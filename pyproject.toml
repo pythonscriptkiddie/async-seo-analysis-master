@@ -59,3 +59,6 @@ packages = ["async_seo_analyzer"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+  "timeout: per-test timeout (requires pytest-timeout)",
+]
