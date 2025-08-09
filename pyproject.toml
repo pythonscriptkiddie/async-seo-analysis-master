@@ -35,6 +35,11 @@ classifiers = [
   "Intended Audience :: Developers",
 ]
 
+[project.urls]
+Homepage = "https://github.com/pythonscriptkiddie/async-seo-analyzer"
+Repository = "https://github.com/pythonscriptkiddie/async-seo-analyzer"
+Issues = "https://github.com/pythonscriptkiddie/async-seo-analyzer/issues"
+
 [project.optional-dependencies]
 dev = [
   "pytest>=8.2",

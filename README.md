@@ -23,6 +23,31 @@ Dev extras (tests):
 pip install -e '.[dev]'
 ```
 
+### Install from a ZIP/Tarball
+
+1) Download the source archive (GitHub → Code → Download ZIP or a release asset)
+2) Unpack the archive, then in the project root:
+```bash
+python -m venv .venv
+source .venv/bin/activate
+# user install
+pip install -e .
+# or with dev/test tools
+pip install -e '.[dev]'
+```
+
+### Install by Cloning the Repository
+
+```bash
+git clone https://github.com/your-org/async-seo-analyzer.git
+cd async-seo-analyzer
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+# optional dev deps
+pip install -e '.[dev]'
+```
+
 ## CLI
 
 ```bash
@@ -67,6 +92,11 @@ docker build -t async-seo-analyzer -f DOCKERFILE .
 Run:
 ```bash
 docker run --rm async-seo-analyzer https://example.com --follow-links --max-depth 1 -f json
+```
+
+Compose:
+```bash
+docker compose run --rm analyzer https://example.com --follow-links --max-depth 1 -f json
 ```
 
 ## Development

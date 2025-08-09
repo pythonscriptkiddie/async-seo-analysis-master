@@ -1,0 +1,15 @@
+version: "3.9"
+services:
+  analyzer:
+    build:
+      context: .
+      dockerfile: DOCKERFILE
+    image: async-seo-analyzer:latest
+    environment:
+      # Example for future LLM features:
+      # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    entrypoint: ["python", "-m", "async_seo_analyzer.__main__"]
+    command: ["--help"]
+    # Uncomment to save outputs locally (e.g., HTML files)
+    # volumes:
+    #   - ./:/work
