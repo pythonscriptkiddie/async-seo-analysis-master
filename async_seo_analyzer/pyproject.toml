@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "async-seo-analyzer"
+version = "0.1.0"
+description = "Async-first SEO analyzer inspired by pyseoanalyzer, with concurrent crawling."
+readme = "README.md"
+authors = [
+  { name = "Async SEO Analyzer Team" }
+]
+license = { file = "../LICENSE" }
+requires-python = ">=3.11"
+dependencies = [
+  "aiohttp>=3.9",
+  "beautifulsoup4>=4.12",
+  "lxml>=5.2",
+  "Jinja2>=3.1",
+  "trafilatura>=2.0.0",
+]
+keywords = [
+  "seo",
+  "async",
+  "crawler",
+  "website",
+  "analysis",
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+]
+
+[project.scripts]
+async-seo-analyzer = "async_seo_analyzer.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["async_seo_analyzer"]
