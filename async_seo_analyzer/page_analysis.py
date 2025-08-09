@@ -102,13 +102,8 @@ def get_ngrams(tokens: List[str], n: int) -> List[Tuple[str, ...]]:
     if len(tokens) < n:
         return []
     arr = np.array(tokens, dtype=object)
-    # shape: (len - n + 1, n)
-    shape = (len(arr) - n + 1, n)
-    strides = (arr.itemsize, arr.itemsize)
-    window_view = np.lib.stride_tricks.as_strided(arr, shape=shape, strides=strides)
-    # join across last axis
-    joined = np.apply_along_axis(lambda x: " ".join(x), axis=1, arr=window_view)
-    return [(s,) for s in joined.tolist()]
+    windows = np.lib.stride_tricks.sliding_window_view(arr, window_shape=n)
+    return [tuple(row.tolist()) for row in windows]
 
 
 def analyze_html(url: str, raw_html: str, analyze_headings: bool, analyze_extra_tags: bool) -> PageResult:

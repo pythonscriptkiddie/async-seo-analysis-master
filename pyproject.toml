@@ -10,7 +10,7 @@ readme = "README.md"
 authors = [
   { name = "Async SEO Analyzer Team" }
 ]
-license = { file = "../LICENSE" }
+license = { file = "LICENSE" }
 requires-python = ">=3.11"
 dependencies = [
   "aiohttp>=3.9",
@@ -35,6 +35,12 @@ classifiers = [
   "Intended Audience :: Developers",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2",
+  "pytest-asyncio>=0.23",
+]
+
 [project.scripts]
 async-seo-analyzer = "async_seo_analyzer.__main__:main"
 
@@ -42,7 +48,13 @@ async-seo-analyzer = "async_seo_analyzer.__main__:main"
 include = [
   "async_seo_analyzer/**",
   "README.md",
+  "LICENSE",
+  "tests/**",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["async_seo_analyzer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
