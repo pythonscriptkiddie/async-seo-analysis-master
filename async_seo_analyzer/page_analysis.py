@@ -1,3 +1,13 @@
+"""Page-level analysis utilities for extracting SEO-relevant signals.
+
+Includes:
+- Tokenization with stopword filtering
+- Heading and additional tag extraction via lxml
+- OG tag checks, anchor/image validation warnings
+- N-gram generation using NumPy sliding windows
+- Parity-oriented fields (wordcount, bigrams, trigrams, content hash)
+"""
+
 import hashlib
 import json
 import re
@@ -44,6 +54,11 @@ IMAGE_EXTENSIONS = {".img", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg", ".w
 
 @dataclass
 class PageResult:
+    """Container for page analysis results.
+
+    Attributes mirror pyseoanalyzer parity and add structured counters for
+    word-level and n-gram statistics.
+    """
     url: str
     title: str = ""
     description: str = ""
@@ -63,6 +78,7 @@ class PageResult:
     additional_info: Dict[str, List[str]] = field(default_factory=dict)
 
     def as_dict(self) -> Dict:
+        """Return a JSON-serializable dictionary representing this page."""
         result = {
             "url": self.url,
             "title": self.title,
@@ -91,14 +107,21 @@ class PageResult:
 
 
 def tokenize(rawtext: str) -> List[str]:
+    """Split text into tokens, lowercased, with English stopwords removed."""
     return [word for word in TOKEN_REGEX.findall(rawtext.lower()) if word not in ENGLISH_STOP_WORDS]
 
 
 def raw_tokenize(rawtext: str) -> List[str]:
+    """Split text into raw tokens, no stopword filtering."""
     return TOKEN_REGEX.findall(rawtext.lower())
 
 
 def get_ngrams(tokens: List[str], n: int) -> List[Tuple[str, ...]]:
+    """Return sliding-window n-grams using NumPy for performance.
+
+    Uses np.lib.stride_tricks.sliding_window_view to build n-grams in O(1)
+    extra memory relative to the token list.
+    """
     if len(tokens) < n:
         return []
     arr = np.array(tokens, dtype=object)
@@ -107,6 +130,11 @@ def get_ngrams(tokens: List[str], n: int) -> List[Tuple[str, ...]]:
 
 
 def analyze_html(url: str, raw_html: str, analyze_headings: bool, analyze_extra_tags: bool) -> PageResult:
+    """Analyze the HTML of a single page and return a PageResult.
+
+    Performs parity-oriented checks with pyseoanalyzer while using modern
+    libraries for metadata extraction and fast n-gram generation.
+    """
     content_hash = hashlib.sha1(raw_html.encode("utf-8")).hexdigest()
 
     html_without_comments = re.sub(r"<!--.*?-->", r"", raw_html, flags=re.DOTALL)

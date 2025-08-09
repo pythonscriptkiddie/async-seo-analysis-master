@@ -1,3 +1,9 @@
+"""Public analyzer API bridging the async crawler and page analysis.
+
+Exports the synchronous `analyze` function which orchestrates crawling (optional)
+and per-page analysis, aggregating site-level metrics similar to pyseoanalyzer.
+"""
+
 import asyncio
 import time
 from collections import Counter, defaultdict
@@ -15,16 +21,19 @@ from .page_analysis import analyze_html
 
 
 def _calc_total_time(start_time: float) -> float:
+    """Compute elapsed time in seconds given a start timestamp."""
     return time.time() - start_time
 
 
 async def _fetch_text(session: aiohttp.ClientSession, url: str, timeout: float = 10.0) -> tuple[str, dict[str, str]]:
+    """Fetch URL text via aiohttp with a timeout; return (text, headers)."""
     async with session.get(url, timeout=timeout) as resp:
         text = await resp.text()
         return text, {k.lower(): v for k, v in resp.headers.items()}
 
 
 async def _analyze_single_page(url: str, analyze_headings: bool, analyze_extra_tags: bool, pool: ThreadPoolExecutor) -> Dict:
+    """Asynchronously download and analyze a single page using a thread pool."""
     ssl_ctx = ssl.create_default_context(cafile=certifi.where())
     connector = TCPConnector(ssl=ssl_ctx)
     async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}, connector=connector) as session:
@@ -38,6 +47,7 @@ async def _analyze_single_page(url: str, analyze_headings: bool, analyze_extra_t
 
 
 async def _analyze_crawled_pages(crawled: List[Dict], analyze_headings: bool, analyze_extra_tags: bool, pool: ThreadPoolExecutor) -> List[Dict]:
+    """Analyze a batch of crawled pages concurrently in a shared thread pool."""
     loop = asyncio.get_running_loop()
     tasks = [
         loop.run_in_executor(
@@ -59,6 +69,22 @@ def analyze(
     concurrency: int = 20,
     workers: int = 0,
 ) -> Dict:
+    """Analyze a site or a single page and return a result dictionary.
+
+    Parameters
+    - url: The start URL to analyze.
+    - sitemap_url: Optional sitemap URL to seed the crawl.
+    - analyze_headings: If True, include h1-h6 extraction.
+    - analyze_extra_tags: If True, include additional meta and OG tags.
+    - follow_links: If True, crawl internal links up to max_depth.
+    - max_depth: Maximum depth for crawling.
+    - concurrency: Max number of concurrent fetches.
+    - workers: Thread pool size for CPU-bound tasks (0 = auto cpu_count).
+
+    Returns
+    - A dictionary with pages, duplicate_pages, keywords, errors, total_time,
+      and optionally crawl_metrics when crawling.
+    """
     start = time.time()
 
     max_workers = workers if workers and workers > 0 else (os.cpu_count() or 4)
@@ -81,10 +107,6 @@ def analyze(
         unigram_counts = Counter()
         bigram_counts = Counter()
         trigram_counts = Counter()
-
-        # Parallelize per-page n-gram accumulation in the pool
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
 
         def accumulate(page: Dict) -> tuple[Counter, Counter, Counter, str, str]:
             return (

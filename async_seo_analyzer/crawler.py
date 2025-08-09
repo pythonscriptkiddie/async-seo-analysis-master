@@ -1,3 +1,10 @@
+"""Async HTML crawler with robots.txt compliance and concurrency controls.
+
+This module provides an `AsyncCrawler` class that fetches and parses pages
+concurrently while respecting robots.txt rules and crawl-delay. HTML parsing
+is offloaded to a thread pool for performance.
+"""
+
 import asyncio
 import hashlib
 import ssl
@@ -20,11 +27,34 @@ from .utils import rel_to_abs_url, retry
 
 @dataclass
 class WorkItem:
+    """Unit of work for the crawler queue.
+
+    Attributes
+    - depth: Current traversal depth from the homepage.
+    - url: The absolute URL to fetch.
+    """
     depth: int
     url: str
 
 
 class AsyncCrawler:
+    """Concurrent crawler for a single site.
+
+    Parameters
+    - homepage: Starting URL to crawl.
+    - max_depth: Maximum link depth to follow (0 = homepage only).
+    - max_concurrency: Max simultaneous fetch operations.
+    - include_text: If True, include raw HTML in results.
+    - include_links: If True, parse and collect outgoing links.
+    - include_images: If True, parse and collect image information.
+    - user_agent: User-Agent header to send.
+    - cpu_workers: Number of threads for HTML parsing (None => default).
+
+    Attributes
+    - pages: List of parsed page dictionaries.
+    - metrics: Aggregate crawl metrics (fetch/parse time, pages, skips).
+    """
+
     def __init__(
         self,
         homepage: str,
@@ -62,13 +92,16 @@ class AsyncCrawler:
 
     @property
     def base_netloc(self) -> str:
+        """Netloc (host:port) of the homepage."""
         return urlsplit(self.homepage).netloc
 
     @property
     def base_scheme(self) -> str:
+        """URL scheme (http/https) of the homepage."""
         return urlsplit(self.homepage).scheme or "https"
 
     async def _fetch(self, session: aiohttp.ClientSession, url: str) -> tuple[str, str, float, str]:
+        """Fetch a URL and return (final_url, text, elapsed_ms, content_type)."""
         async def do_get():
             return await session.get(url)
 
@@ -84,6 +117,7 @@ class AsyncCrawler:
             return url, "", elapsed_ms, ""
 
     def _parse(self, url: str, html: str) -> Dict:
+        """Parse HTML with BeautifulSoup and extract images/links/content hash."""
         soup = BeautifulSoup(html, "lxml")
         result: Dict = {"url": url}
 
@@ -117,6 +151,7 @@ class AsyncCrawler:
         return result
 
     async def _load_robots(self, session: aiohttp.ClientSession) -> None:
+        """Load and parse robots.txt for the site; set crawl-delay if present."""
         robots_url = f"{self.base_scheme}://{self.base_netloc}/robots.txt"
         try:
             resp = await session.get(robots_url)
@@ -137,6 +172,7 @@ class AsyncCrawler:
             self._crawl_delay = 0.0
 
     def _allowed_by_robots(self, url: str) -> bool:
+        """Return True if the URL is permitted by robots.txt for this user-agent."""
         if not self._robots:
             return True
         try:
@@ -148,6 +184,11 @@ class AsyncCrawler:
             return True
 
     async def crawl(self, sitemap_url: str | None = None) -> List[Dict]:
+        """Crawl the site starting at the homepage, optionally seeding from sitemap.
+
+        Returns a list of parsed page dictionaries. Respects robots.txt and
+        crawl-delay. Only HTML content-types are parsed; others are skipped.
+        """
         queue: Queue[WorkItem] = Queue()
         await queue.put(WorkItem(depth=0, url=self.homepage))
 
