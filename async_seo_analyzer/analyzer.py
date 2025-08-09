@@ -5,7 +5,10 @@ from collections import Counter, defaultdict
 from typing import Dict, List
 from urllib.parse import urlsplit
 
+import ssl
+import certifi
 import aiohttp
+from aiohttp import TCPConnector
 from bs4 import BeautifulSoup
 import trafilatura
 
@@ -42,7 +45,9 @@ def _basic_keywords(tokens: List[str]) -> List[Dict]:
 
 
 async def _analyze_single_page(url: str, analyze_headings: bool, analyze_extra_tags: bool) -> Dict:
-    async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as session:
+    ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+    connector = TCPConnector(ssl=ssl_ctx)
+    async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}, connector=connector) as session:
         raw_html, headers = await _fetch_text(session, url)
 
     content_hash = hashlib.sha1(raw_html.encode("utf-8")).hexdigest()
@@ -161,7 +166,6 @@ def analyze(
     content_hashes = defaultdict(set)
 
     for p in pages:
-        # simple tokenization from page text fallback
         tokens = _tokenize(((p.get("title") or "") + " " + (p.get("description") or "")))
         wordcount.update(tokens)
         content_hash = p.get("content_hash")

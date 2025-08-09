@@ -1,2 +1,5 @@
 /.venv
 /.venv311
+*.pyc
+*.pyc
+async_seo_analyzer/__pycache__/analyzer.cpython-311.pyc
