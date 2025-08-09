@@ -57,6 +57,7 @@ class AsyncCrawler:
             "fetch_ms_total": 0.0,
             "parse_ms_total": 0.0,
             "pages": 0,
+            "skipped_non_html": 0,
         }
 
     @property
@@ -67,7 +68,7 @@ class AsyncCrawler:
     def base_scheme(self) -> str:
         return urlsplit(self.homepage).scheme or "https"
 
-    async def _fetch(self, session: aiohttp.ClientSession, url: str) -> tuple[str, str, float]:
+    async def _fetch(self, session: aiohttp.ClientSession, url: str) -> tuple[str, str, float, str]:
         async def do_get():
             return await session.get(url)
 
@@ -76,10 +77,11 @@ class AsyncCrawler:
             response = await retry(lambda: do_get(), max_retries=3, timeout=10.0, retry_interval=1.5)
             text = await response.text()
             elapsed_ms = (time.perf_counter() - start) * 1000.0
-            return str(response.url), text, elapsed_ms
+            content_type = response.headers.get("Content-Type", "")
+            return str(response.url), text, elapsed_ms, content_type
         except Exception:
             elapsed_ms = (time.perf_counter() - start) * 1000.0
-            return url, "", elapsed_ms
+            return url, "", elapsed_ms, ""
 
     def _parse(self, url: str, html: str) -> Dict:
         soup = BeautifulSoup(html, "lxml")
@@ -190,8 +192,14 @@ class AsyncCrawler:
                         async with sem:
                             if self._crawl_delay:
                                 await asyncio.sleep(self._crawl_delay)
-                            url, html, fetch_ms = await self._fetch(session, item.url)
+                            url, html, fetch_ms, content_type = await self._fetch(session, item.url)
                             self.metrics["fetch_ms_total"] += fetch_ms
+
+                        # Skip non-HTML content
+                        if not content_type or ("html" not in content_type.lower()):
+                            self.metrics["skipped_non_html"] += 1
+                            queue.task_done()
+                            continue
 
                         if not html:
                             queue.task_done()
