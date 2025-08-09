@@ -33,46 +33,70 @@ async def _analyze_single_page(url: str, analyze_headings: bool, analyze_extra_t
     return page.as_dict()
 
 
+async def _analyze_crawled_pages(crawled: List[Dict], analyze_headings: bool, analyze_extra_tags: bool) -> List[Dict]:
+    tasks = [
+        asyncio.to_thread(
+            analyze_html, p["url"], p.get("text", ""), analyze_headings, analyze_extra_tags
+        )
+        for p in crawled
+    ]
+    results = await asyncio.gather(*tasks)
+    return [r.as_dict() for r in results]
+
+
 def analyze(
     url: str,
     sitemap_url: str | None = None,
     analyze_headings: bool = False,
     analyze_extra_tags: bool = False,
     follow_links: bool = False,
+    max_depth: int = 3,
+    concurrency: int = 20,
 ) -> Dict:
     start = time.time()
 
     pages: List[Dict]
     if follow_links or sitemap_url:
-        crawler = AsyncCrawler(homepage=url, max_depth=3, max_concurrency=20)
+        crawler = AsyncCrawler(homepage=url, max_depth=max_depth, max_concurrency=concurrency)
         crawled = asyncio.run(crawler.crawl(sitemap_url=sitemap_url))
-        # crawled pages have raw HTML and links; re-analyze for parity
-        pages = [
-            analyze_html(p["url"], p.get("text", ""), analyze_headings, analyze_extra_tags).as_dict()
-            for p in crawled
-        ]
+        pages = asyncio.run(_analyze_crawled_pages(crawled, analyze_headings, analyze_extra_tags))
     else:
         pages = [asyncio.run(_analyze_single_page(url, analyze_headings, analyze_extra_tags))]
 
     # Aggregate like pyseoanalyzer
-    wordcount = Counter()
     content_hashes = defaultdict(set)
+    unigram_counts = Counter()
+    bigram_counts = Counter()
+    trigram_counts = Counter()
 
     for p in pages:
-        # Keywords are embedded per page; global keywords from totals if needed
-        for w, c in p.get("keywords", []):
-            if isinstance(w, tuple):
-                continue
         content_hash = p.get("content_hash")
         if content_hash:
             content_hashes[content_hash].add(p.get("url", ""))
+        # per-page wordcount/bigrams/trigrams
+        unigram_counts.update(p.get("wordcount", {}))
+        bigram_counts.update(p.get("bigrams", {}))
+        trigram_counts.update(p.get("trigrams", {}))
 
     duplicate_pages = [list(v) for v in content_hashes.values() if len(v) > 1]
+
+    # Build site-level keywords list: words and n-grams with count > 4
+    keywords: List[Dict] = []
+    for w, c in unigram_counts.items():
+        if c > 4:
+            keywords.append({"word": w, "count": c})
+    for w, c in bigram_counts.items():
+        if c > 4:
+            keywords.append({"word": tuple(w.split(" ")), "count": c})
+    for w, c in trigram_counts.items():
+        if c > 4:
+            keywords.append({"word": tuple(w.split(" ")), "count": c})
+    keywords.sort(key=lambda x: x["count"], reverse=True)
 
     result: Dict = {
         "pages": pages,
         "duplicate_pages": duplicate_pages,
-        "keywords": [],
+        "keywords": keywords,
         "errors": [],
         "total_time": _calc_total_time(start),
     }

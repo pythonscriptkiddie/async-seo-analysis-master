@@ -8,7 +8,11 @@ from typing import Dict, List, Tuple
 
 import lxml.html as lh
 from bs4 import BeautifulSoup
+from urllib.parse import urlsplit
+import trafilatura
+import numpy as np
 from .stopwords import ENGLISH_STOP_WORDS
+from .utils import rel_to_abs_url
 
 TOKEN_REGEX = re.compile(r"(?u)\b\w\w+\b")
 
@@ -77,6 +81,7 @@ class PageResult:
             "warnings": self.warnings,
             "content_hash": self.content_hash,
             "links": self.links,
+            "wordcount": dict(self.wordcount),
         }
         if self.headings:
             result["headings"] = self.headings
@@ -94,22 +99,43 @@ def raw_tokenize(rawtext: str) -> List[str]:
 
 
 def get_ngrams(tokens: List[str], n: int) -> List[Tuple[str, ...]]:
-    return list(zip(*[tokens[i:] for i in range(n)]))
+    if len(tokens) < n:
+        return []
+    arr = np.array(tokens, dtype=object)
+    # shape: (len - n + 1, n)
+    shape = (len(arr) - n + 1, n)
+    strides = (arr.itemsize, arr.itemsize)
+    window_view = np.lib.stride_tricks.as_strided(arr, shape=shape, strides=strides)
+    # join across last axis
+    joined = np.apply_along_axis(lambda x: " ".join(x), axis=1, arr=window_view)
+    return [(s,) for s in joined.tolist()]
 
 
 def analyze_html(url: str, raw_html: str, analyze_headings: bool, analyze_extra_tags: bool) -> PageResult:
     content_hash = hashlib.sha1(raw_html.encode("utf-8")).hexdigest()
 
-    # Remove HTML comments for BS4
     html_without_comments = re.sub(r"<!--.*?-->", r"", raw_html, flags=re.DOTALL)
     soup = BeautifulSoup(html_without_comments, "html.parser")
 
-    # Title / description
-    title = (soup.title.string or "").strip() if soup.title else ""
-    description_tag = soup.find("meta", attrs={"name": "description"})
-    description = (description_tag["content"].strip() if description_tag and description_tag.has_attr("content") else "")
+    metadata = trafilatura.extract_metadata(filecontent=raw_html, default_url=url, extensive=True)
+    md = metadata.as_dict() if metadata else {}
 
-    # Headings/additional via lxml
+    def mget(key: str) -> str:
+        v = md.get(key)
+        return "" if (v is None or v == "None") else v
+
+    title = (soup.title.string or "").strip() if soup.title else mget("title")
+    description_tag = soup.find("meta", attrs={"name": "description"})
+    description = (
+        (description_tag["content"].strip() if description_tag and description_tag.has_attr("content") else "")
+        or mget("description")
+    )
+
+    author = mget("author")
+    hostname = mget("hostname")
+    sitename = mget("sitename")
+    date = mget("date")
+
     if analyze_headings or analyze_extra_tags:
         try:
             dom = lh.fromstring(html_without_comments)
@@ -131,25 +157,28 @@ def analyze_html(url: str, raw_html: str, analyze_headings: bool, analyze_extra_
             if values:
                 additional[tag] = values
 
-    # Links and images checks/warnings
-    links: List[str] = []
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        text = a.text.lower().strip()
-        if len(a.get("title", "")) == 0:
-            # mirror upstream warning
-            pass
-        if text in ["click here", "page", "article"]:
-            pass
-        links.append(href)
+    links_set = set()
+    base = urlsplit(url)
 
+    def is_internal(abs_url: str) -> bool:
+        return urlsplit(abs_url).netloc == base.netloc
+
+    for a in soup.find_all("a", href=True):
+        abs_link = rel_to_abs_url(a["href"], base_domain=url, url=url)
+        if not is_internal(abs_link):
+            continue
+        if "#" in abs_link:
+            abs_link = abs_link[: abs_link.rindex("#")]
+        links_set.add(abs_link)
+
+    image_warnings: List[str] = []
     for img in soup.find_all("img"):
         src = img.get("src") or img.get("data-src") or ""
         if len(img.get("alt", "")) == 0:
-            # mirror upstream warning
-            pass
+            image_warnings.append(f"Image missing alt tag: {src}")
 
-    # Tokens/keywords
+    links = sorted(list(links_set))
+
     text_content = soup.get_text(" ")
     tokens = tokenize(text_content)
     raw_tokens = raw_tokenize(text_content)
@@ -160,13 +189,66 @@ def analyze_html(url: str, raw_html: str, analyze_headings: bool, analyze_extra_
     bigrams_counter = Counter(" ".join(t) for t in get_ngrams(raw_tokens, 2))
     trigrams_counter = Counter(" ".join(t) for t in get_ngrams(raw_tokens, 3))
 
-    # Keywords threshold like upstream (>4)
     keywords: Dict[str, int] = {w: c for w, c in wordcount.items() if c > 4}
+
+    warnings: List[str] = []
+    if len(title) == 0:
+        warnings.append("Missing title tag")
+    elif len(title) < 10:
+        warnings.append(f"Title tag is too short (less than 10 characters): {title}")
+    elif len(title) > 70:
+        warnings.append(f"Title tag is too long (more than 70 characters): {title}")
+
+    if len(description) == 0:
+        warnings.append("Missing description")
+    elif len(description) < 140:
+        warnings.append(f"Description is too short (less than 140 characters): {description}")
+    elif len(description) > 255:
+        warnings.append(f"Description is too long (more than 255 characters): {description}")
+
+    og_title = soup.find_all("meta", attrs={"property": "og:title"})
+    og_description = soup.find_all("meta", attrs={"property": "og:description"})
+    og_image = soup.find_all("meta", attrs={"property": "og:image"})
+    if len(og_title) == 0:
+        warnings.append("Missing og:title")
+    if len(og_description) == 0:
+        warnings.append("Missing og:description")
+    if len(og_image) == 0:
+        warnings.append("Missing og:image")
+
+    meta_keywords = soup.find("meta", attrs={"name": "keywords"})
+    if meta_keywords and meta_keywords.get("content", "").strip():
+        warnings.append(
+            "Keywords should be avoided as they are a spam indicator and no longer used by Search Engines"
+        )
+
+    # Anchor warnings (title/generic text)
+    for a in soup.find_all("a", href=True):
+        abs_link = rel_to_abs_url(a["href"], base_domain=url, url=url)
+        if not is_internal(abs_link):
+            continue
+        if "#" in abs_link:
+            abs_link = abs_link[: abs_link.rindex("#")]
+        if len(a.get("title", "")) == 0:
+            warnings.append(f"Anchor missing title tag: {abs_link}")
+        text = a.text.lower().strip()
+        if text in ["click here", "page", "article"]:
+            warnings.append(f"Anchor text contains generic text: {text}")
+
+    warnings.extend(image_warnings)
+
+    # H1 presence warning (parity)
+    if soup.find_all("h1") == []:
+        warnings.append("Each page should have at least one h1 tag")
 
     page = PageResult(
         url=url,
         title=title,
         description=description,
+        author=author,
+        hostname=hostname,
+        sitename=sitename,
+        date=date,
         total_word_count=total_word_count,
         wordcount=wordcount,
         bigrams=bigrams_counter,
@@ -176,32 +258,7 @@ def analyze_html(url: str, raw_html: str, analyze_headings: bool, analyze_extra_
         links=links,
         headings=headings if analyze_headings else {},
         additional_info=additional if analyze_extra_tags else {},
+        warnings=warnings,
     )
-
-    # Warnings parity
-    if len(title) == 0:
-        page.warnings.append("Missing title tag")
-    elif len(title) < 10:
-        page.warnings.append(f"Title tag is too short (less than 10 characters): {title}")
-    elif len(title) > 70:
-        page.warnings.append(f"Title tag is too long (more than 70 characters): {title}")
-
-    if len(description) == 0:
-        page.warnings.append("Missing description")
-    elif len(description) < 140:
-        page.warnings.append(f"Description is too short (less than 140 characters): {description}")
-    elif len(description) > 255:
-        page.warnings.append(f"Description is too long (more than 255 characters): {description}")
-
-    # OG checks
-    og_title = soup.find_all("meta", attrs={"property": "og:title"})
-    og_description = soup.find_all("meta", attrs={"property": "og:description"})
-    og_image = soup.find_all("meta", attrs={"property": "og:image"})
-    if len(og_title) == 0:
-        page.warnings.append("Missing og:title")
-    if len(og_description) == 0:
-        page.warnings.append("Missing og:description")
-    if len(og_image) == 0:
-        page.warnings.append("Missing og:image")
 
     return page

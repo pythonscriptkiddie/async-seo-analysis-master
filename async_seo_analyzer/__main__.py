@@ -19,6 +19,8 @@ def main():
     parser.add_argument("--analyze-headings", action="store_true", default=False)
     parser.add_argument("--analyze-extra-tags", action="store_true", default=False)
     parser.add_argument("--follow-links", action="store_true", default=False)
+    parser.add_argument("--max-depth", type=int, default=3, help="Max crawl depth when following links.")
+    parser.add_argument("--concurrency", type=int, default=20, help="Max concurrent fetches.")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
     args = parser.parse_args()
@@ -29,6 +31,8 @@ def main():
         analyze_headings=args.analyze_headings,
         analyze_extra_tags=args.analyze_extra_tags,
         follow_links=args.follow_links,
+        max_depth=args.max_depth,
+        concurrency=args.concurrency,
     )
 
     if args.output_format == "html":
